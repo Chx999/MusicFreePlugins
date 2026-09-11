@@ -167,6 +167,7 @@ async function getMediaSource(musicItem, quality) {
   var config = {
     method: "post",
     url: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+    timeout: 10000,
     headers: {
       "Content-Type": "application/json",
       "User-Agent": playerClient.userAgent,
@@ -183,11 +184,19 @@ async function getMediaSource(musicItem, quality) {
 
   const audioFormats = (result.streamingData.adaptiveFormats ?? [])
     .filter((item) => item.url && item.mimeType?.startsWith("audio/"));
-  const preferredFormats = audioFormats.some((item) =>
+  const aacLcFormats = audioFormats.filter(
+    (item) =>
+      item.mimeType.startsWith("audio/mp4") &&
+      item.mimeType.includes("mp4a.40.2")
+  );
+  const mp4Formats = audioFormats.filter((item) =>
     item.mimeType.startsWith("audio/mp4")
-  )
-    ? audioFormats.filter((item) => item.mimeType.startsWith("audio/mp4"))
-    : audioFormats;
+  );
+  const preferredFormats = aacLcFormats.length
+    ? aacLcFormats
+    : mp4Formats.length
+      ? mp4Formats
+      : audioFormats;
   preferredFormats.sort((a, b) => (a.bitrate ?? 0) - (b.bitrate ?? 0));
 
   const qualityIndex = {low: 0, standard: 1, high: 2, super: 3}[quality] ?? 1;
@@ -199,7 +208,8 @@ async function getMediaSource(musicItem, quality) {
   return {
     url: format.url,
     headers: {
-      "User-Agent": playerClient.userAgent,
+      "user-agent": playerClient.userAgent,
+      accept: "*/*",
     },
   };
 }
@@ -207,11 +217,11 @@ async function getMediaSource(musicItem, quality) {
 module.exports = {
   platform: "Youtube",
   author: "Chx999 / 猫头猫",
-  version: "0.1.0",
+  version: "0.1.1",
   supportedSearchType: ["music"],
   srcUrl:
     "https://raw.githubusercontent.com/Chx999/MusicFreePlugins/master/dist/youtube/index.js",
-  cacheControl: "no-cache",
+  cacheControl: "no-store",
   search,
   getMediaSource,
 };

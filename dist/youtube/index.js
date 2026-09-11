@@ -151,6 +151,7 @@ async function getMediaSource(musicItem, quality) {
     var config = {
         method: "post",
         url: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+        timeout: 10000,
         headers: {
             "Content-Type": "application/json",
             "User-Agent": playerClient.userAgent,
@@ -163,9 +164,14 @@ async function getMediaSource(musicItem, quality) {
     }
     const audioFormats = ((_f = result.streamingData.adaptiveFormats) !== null && _f !== void 0 ? _f : [])
         .filter((item) => { var _a; return item.url && ((_a = item.mimeType) === null || _a === void 0 ? void 0 : _a.startsWith("audio/")); });
-    const preferredFormats = audioFormats.some((item) => item.mimeType.startsWith("audio/mp4"))
-        ? audioFormats.filter((item) => item.mimeType.startsWith("audio/mp4"))
-        : audioFormats;
+    const aacLcFormats = audioFormats.filter((item) => item.mimeType.startsWith("audio/mp4") &&
+        item.mimeType.includes("mp4a.40.2"));
+    const mp4Formats = audioFormats.filter((item) => item.mimeType.startsWith("audio/mp4"));
+    const preferredFormats = aacLcFormats.length
+        ? aacLcFormats
+        : mp4Formats.length
+            ? mp4Formats
+            : audioFormats;
     preferredFormats.sort((a, b) => { var _a, _b; return ((_a = a.bitrate) !== null && _a !== void 0 ? _a : 0) - ((_b = b.bitrate) !== null && _b !== void 0 ? _b : 0); });
     const qualityIndex = (_g = { low: 0, standard: 1, high: 2, super: 3 }[quality]) !== null && _g !== void 0 ? _g : 1;
     const format = preferredFormats[Math.min(qualityIndex, preferredFormats.length - 1)];
@@ -175,17 +181,18 @@ async function getMediaSource(musicItem, quality) {
     return {
         url: format.url,
         headers: {
-            "User-Agent": playerClient.userAgent,
+            "user-agent": playerClient.userAgent,
+            accept: "*/*",
         },
     };
 }
 module.exports = {
     platform: "Youtube",
     author: "Chx999 / 猫头猫",
-    version: "0.1.0",
+    version: "0.1.1",
     supportedSearchType: ["music"],
     srcUrl: "https://raw.githubusercontent.com/Chx999/MusicFreePlugins/master/dist/youtube/index.js",
-    cacheControl: "no-cache",
+    cacheControl: "no-store",
     search,
     getMediaSource,
 };
