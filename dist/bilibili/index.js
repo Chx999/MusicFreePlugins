@@ -5,13 +5,24 @@ const dayjs = require("dayjs");
 const he = require("he");
 const CryptoJs = require("crypto-js");
 const { load } = require('cheerio');
+const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const headers = {
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36 Edg/89.0.774.63",
+    "user-agent": userAgent,
     accept: "*/*",
-    "accept-encoding": "gzip, deflate, br",
     "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
 };
 let cookie;
+function getApiData(response, action) {
+    var _a, _b;
+    if ((response === null || response === void 0 ? void 0 : response.code) !== 0 || (response === null || response === void 0 ? void 0 : response.data) == null) {
+        throw new Error(`${action}失败：${(_b = (_a = response === null || response === void 0 ? void 0 : response.message) !== null && _a !== void 0 ? _a : response === null || response === void 0 ? void 0 : response.code) !== null && _b !== void 0 ? _b : "未知错误"}`);
+    }
+    return response.data;
+}
+function getCookieHeader() {
+    return cookie ? `buvid3=${cookie.b_3}; buvid4=${cookie.b_4}` : undefined;
+}
+/** 获取分P和cid */
 async function getCid(bvid, aid) {
     const params = bvid
         ? {
@@ -20,12 +31,23 @@ async function getCid(bvid, aid) {
         : {
             aid: aid,
         };
-    const cidRes = (await axios_1.default.get("https://api.bilibili.com/x/web-interface/view?%s", {
-        headers: headers,
-        params: params,
+    await getCookie();
+    const response = (await axios_1.default.get("https://api.bilibili.com/x/player/pagelist", {
+        headers: Object.assign(Object.assign({}, headers), { cookie: getCookieHeader(), referer: `https://www.bilibili.com/video/${bvid !== null && bvid !== void 0 ? bvid : `av${aid}`}` }),
+        params: Object.assign(Object.assign({}, params), { jsonp: "jsonp" }),
     })).data;
-    return cidRes;
+    const pages = getApiData(response, "获取视频分P");
+    if (!pages.length) {
+        throw new Error("获取视频分P失败：没有可播放的内容");
+    }
+    return {
+        data: {
+            cid: pages[0].cid,
+            pages,
+        },
+    };
 }
+/** 格式化 */
 function durationToSec(duration) {
     if (typeof duration === "number") {
         return duration;
@@ -39,9 +61,8 @@ function durationToSec(duration) {
     return 0;
 }
 const searchHeaders = {
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36 Edg/89.0.774.63",
+    "user-agent": userAgent,
     accept: "application/json, text/plain, */*",
-    "accept-encoding": "gzip, deflate, br",
     origin: "https://search.bilibili.com",
     "sec-fetch-site": "same-site",
     "sec-fetch-mode": "cors",
@@ -53,12 +74,16 @@ async function getCookie() {
     if (!cookie) {
         cookie = (await axios_1.default.get("https://api.bilibili.com/x/frontend/finger/spi", {
             headers: {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1 Edg/114.0.0.0",
+                "User-Agent": userAgent,
             },
         })).data.data;
+        if (!(cookie === null || cookie === void 0 ? void 0 : cookie.b_3) || !(cookie === null || cookie === void 0 ? void 0 : cookie.b_4)) {
+            throw new Error("获取 B 站匿名会话失败");
+        }
     }
 }
 const pageSize = 20;
+/** 搜索 */
 async function searchBase(keyword, page, searchType) {
     await getCookie();
     const params = {
@@ -83,8 +108,9 @@ async function searchBase(keyword, page, searchType) {
         headers: Object.assign(Object.assign({}, searchHeaders), { cookie: `buvid3=${cookie.b_3};buvid4=${cookie.b_4}` }),
         params: params,
     })).data;
-    return res.data;
+    return getApiData(res, "搜索");
 }
+/** 获取收藏夹 */
 async function getFavoriteList(id) {
     const result = [];
     const pageSize = 20;
@@ -126,6 +152,7 @@ function formatMedia(result) {
         artwork: ((_j = result.pic) === null || _j === void 0 ? void 0 : _j.startsWith("//"))
             ? "http:".concat(result.pic)
             : result.pic,
+        // description: result.description,
         duration: durationToSec(result.duration),
         tags: (_k = result.tag) === null || _k === void 0 ? void 0 : _k.split(","),
         date: dayjs.unix(result.pubdate || result.created).format("YYYY-MM-DD"),
@@ -133,7 +160,9 @@ function formatMedia(result) {
 }
 async function searchAlbum(keyword, page) {
     const resultData = await searchBase(keyword, page, "video");
-    const albums = resultData.result.map(formatMedia);
+    const albums = resultData.result
+        .filter((item) => item.type === "video" && item.bvid)
+        .map(formatMedia);
     return {
         isEnd: resultData.numResults <= page * pageSize,
         data: albums,
@@ -295,8 +324,9 @@ async function getArtistWorks(artistItem, page, type) {
         data: albums,
     };
 }
+/** 获取音源 */
 async function getMediaSource(musicItem, quality) {
-    var _a;
+    var _a, _b, _c, _d, _e, _f, _g;
     let cid = musicItem.cid;
     if (!cid) {
         cid = (await getCid(musicItem.bvid, musicItem.aid)).data.cid;
@@ -308,42 +338,45 @@ async function getMediaSource(musicItem, quality) {
         : {
             aid: musicItem.aid,
         };
-    const res = (await axios_1.default.get("https://api.bilibili.com/x/player/playurl", {
-        headers: headers,
-        params: Object.assign(Object.assign({}, _params), { cid: cid, fnval: 16 }),
+    await getCookie();
+    const referer = `https://www.bilibili.com/video/${(_a = musicItem.bvid) !== null && _a !== void 0 ? _a : `av${musicItem.aid}`}`;
+    const response = (await axios_1.default.get("https://api.bilibili.com/x/player/playurl", {
+        headers: Object.assign(Object.assign({}, headers), { cookie: getCookieHeader(), referer }),
+        params: Object.assign(Object.assign({}, _params), { cid, qn: 127, fnver: 0, fnval: 4048, fourk: 1, platform: "pc" }),
     })).data;
+    const data = getApiData(response, "获取音源");
     let url;
-    if (res.data.dash) {
-        const audios = res.data.dash.audio;
+    if (data.dash) {
+        const extraAudios = [];
+        [(_b = data.dash.dolby) === null || _b === void 0 ? void 0 : _b.audio, (_c = data.dash.flac) === null || _c === void 0 ? void 0 : _c.audio].forEach((audio) => {
+            if (Array.isArray(audio)) {
+                extraAudios.push(...audio);
+            }
+            else if (audio) {
+                extraAudios.push(audio);
+            }
+        });
+        const audios = [...((_d = data.dash.audio) !== null && _d !== void 0 ? _d : []), ...extraAudios]
+            .filter((audio, index, list) => {
+            var _a;
+            const audioUrl = (_a = audio.baseUrl) !== null && _a !== void 0 ? _a : audio.base_url;
+            return audioUrl && list.findIndex((item) => { var _a; return ((_a = item.baseUrl) !== null && _a !== void 0 ? _a : item.base_url) === audioUrl; }) === index;
+        });
         audios.sort((a, b) => a.bandwidth - b.bandwidth);
-        switch (quality) {
-            case "low":
-                url = audios[0].baseUrl;
-                break;
-            case "standard":
-                url = audios[1].baseUrl;
-                break;
-            case "high":
-                url = audios[2].baseUrl;
-                break;
-            case "super":
-                url = audios[3].baseUrl;
-                break;
-        }
+        const qualityIndex = (_e = { low: 0, standard: 1, high: 2, super: 3 }[quality]) !== null && _e !== void 0 ? _e : 1;
+        const audio = audios[Math.min(qualityIndex, audios.length - 1)];
+        url = (_f = audio === null || audio === void 0 ? void 0 : audio.baseUrl) !== null && _f !== void 0 ? _f : audio === null || audio === void 0 ? void 0 : audio.base_url;
     }
-    else {
-        url = res.data.durl[0].url;
+    else if ((_g = data.durl) === null || _g === void 0 ? void 0 : _g.length) {
+        url = data.durl[0].url;
     }
-    const hostUrl = url.substring(url.indexOf("/") + 2);
+    if (!url) {
+        throw new Error("获取音源失败：该视频没有当前账号可用的音频流");
+    }
     const _headers = {
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36 Edg/89.0.774.63",
+        "user-agent": userAgent,
         accept: "*/*",
-        host: hostUrl.substring(0, hostUrl.indexOf("/")),
-        "accept-encoding": "gzip, deflate, br",
-        connection: "keep-alive",
-        referer: "https://www.bilibili.com/video/".concat((_a = (musicItem.bvid !== null && musicItem.bvid !== undefined
-            ? musicItem.bvid
-            : musicItem.aid)) !== null && _a !== void 0 ? _a : ""),
+        referer,
     };
     return {
         url: url,
@@ -351,6 +384,7 @@ async function getMediaSource(musicItem, quality) {
     };
 }
 async function getTopLists() {
+    // 入站必刷
     const precious = {
         title: "入站必刷",
         data: [
@@ -361,6 +395,7 @@ async function getTopLists() {
             },
         ],
     };
+    // 每周必看
     const weekly = {
         title: "每周必看",
         data: [],
@@ -376,6 +411,7 @@ async function getTopLists() {
         description: e.name,
         coverImg: "https://s1.hdslb.com/bfs/static/jinkela/popular/assets/icon_weekly.png",
     }));
+    // 排行榜
     const boardKeys = [
         {
             id: "ranking/v2?rid=0&type=all",
@@ -503,11 +539,17 @@ function formatComment(item) {
     var _a, _b, _c, _d, _e;
     return {
         id: item.rpid,
+        // 用户名
         nickName: (_a = item.member) === null || _a === void 0 ? void 0 : _a.uname,
+        // 头像
         avatar: (_b = item.member) === null || _b === void 0 ? void 0 : _b.avatar,
+        // 评论内容
         comment: (_c = item.content) === null || _c === void 0 ? void 0 : _c.message,
+        // 点赞数
         like: item.like,
+        // 评论时间
         createAt: item.ctime * 1000,
+        // 地址
         location: ((_e = (_d = item.reply_control) === null || _d === void 0 ? void 0 : _d.location) === null || _e === void 0 ? void 0 : _e.startsWith("IP属地：")) ? item.reply_control.location.slice(5) : undefined
     };
 }
@@ -541,10 +583,10 @@ async function getMusicComments(musicItem) {
 module.exports = {
     platform: "bilibili",
     appVersion: ">=0.0",
-    version: "0.2.3",
-    author: "猫头猫",
+    version: "0.3.0",
+    author: "Chx999 / 猫头猫",
     cacheControl: "no-cache",
-    srcUrl: "https://gitee.com/maotoumao/MusicFreePlugins/raw/v0.1/dist/bilibili/index.js",
+    srcUrl: "https://raw.githubusercontent.com/Chx999/MusicFreePlugins/master/dist/bilibili/index.js",
     primaryKey: ["id", "aid", "bvid", "cid"],
     hints: {
         importMusicSheet: [
@@ -565,9 +607,8 @@ module.exports = {
     },
     getMediaSource,
     async getAlbumInfo(albumItem) {
-        var _a;
         const cidRes = await getCid(albumItem.bvid, albumItem.aid);
-        const _ref2 = (_a = cidRes === null || cidRes === void 0 ? void 0 : cidRes.data) !== null && _a !== void 0 ? _a : {};
+        const _ref2 = cidRes.data;
         const cid = _ref2.cid;
         const pages = _ref2.pages;
         let musicList;
@@ -589,3 +630,57 @@ module.exports = {
     importMusicSheet,
     getMusicComments
 };
+// searchAlbum('周杰伦', 2)
+// {
+//   url: 'https://xy60x29x234x168xy.mcdn.bilivideo.cn:4483/upgcxcode/01/93/935359301/935359301-1-30232.m4s?e=ig8euxZM2rNcNbdlhoNvNC8BqJIzNbfqXBvEqxTEto8BTrNvN0GvT90W5JZMkX_YN0MvXg8gNEV4NC8xNEV4N03eN0B5tZlqNxTEto8BTrNvNeZVuJ10Kj_g2UB02J0mN0B5tZlqNCNEto8BTrNvNC7MTX502C8f2jmMQJ6mqF2fka1mqx6gqj0eN0B599M=&uipk=5&nbs=1&deadline=1685552083&gen=playurlv2&os=mcdn&oi=1698964255&trid=0000c4b8722cca5a4b88b6ffceabb89e7330u&mid=0&platform=pc&upsig=5317110e9e7617d7a04a47fb15f3bd87&uparams=e,uipk,nbs,deadline,gen,os,oi,trid,mid,platform&mcdnid=1003026&bvc=vod&nettype=0&orderid=0,3&buvid=&build=0&agrr=1&bw=13831&logo=A0000001',
+//   headers: {
+//     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36 Edg/89.0.774.63',
+//     accept: '*/*',
+//     host: 'xy60x29x234x168xy.mcdn.bilivideo.cn:4483',
+//     'accept-encoding': 'gzip, deflate, br',
+//     connection: 'keep-alive',
+//     referer: 'https://www.bilibili.com/video/BV1Pv4y1z7A1'
+//   }
+// }
+// getMediaComment( {
+//   id: 'BV1r7411p7R4',
+//   aid: 86670567,
+//   bvid: 'BV1r7411p7R4',
+//   artist: 'zyl2012',
+//   title: '【4K修复】周杰伦 - 青花瓷MV 2160P修复版 经典中国风',
+//   album: 'BV1r7411p7R4',
+//   artwork: 'http://i2.hdslb.com/bfs/archive/d6d5176730f19c23e03d3304c7bd30041024d5d8.jpg',
+//   description: '转载自我自己修复\n' +
+//     'DVD修复伪1080P，修复仅为提升观感\n' +
+//     '---------------------\n' +
+//     '2021.4.9\n' +
+//     '重新修复伪4K，修复仅为提升观感',
+//   duration: 242,
+//   date: '2020-02-04'
+// }).then(console.log)
+// getArtistWorks({
+//   name: '不想睡觉猫头猫',
+//   id: 12866223,
+//   fans: 1103,
+//   description: '不定期搞搞事情～点个关注吧\n(๑>؂<๑）',
+//   avatar: '//i1.hdslb.com/bfs/face/ec98b6458cdc8fdde2a72f705151b0e81cadff71.jpg',
+//   worksNum: 20
+// }, 1, 'music').then(console.log);
+// console.log(
+//   getRid({
+//     mid: 12866223,
+//     ps: 30,
+//     tid: 0,
+//     pn: 1,
+//     keyword: "",
+//     order: "pubdate",
+//     platform: "web",
+//     web_location: 1550101,
+//     order_avoided: true,
+//     dm_img_list: [],
+//     dm_img_str: "V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ",
+//     dm_cover_img_str:
+//       "QU5HTEUgKE5WSURJQSwgTlZJRElBIEdlRm9yY2UgR1RYIDE2NTAgKDB4MDAwMDFGOTEpIERpcmVjdDNEMTEgdnNfNV8wIHBzXzVfMCwgRDNEMTEpR29vZ2xlIEluYy4gKE5WSURJQS",
+//     wts: 1701483964,
+//   })
+// );

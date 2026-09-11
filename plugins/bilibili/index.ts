@@ -4,16 +4,27 @@ import he = require("he");
 import CryptoJs = require("crypto-js");
 const {load} = require('cheerio');
 
+const userAgent =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const headers = {
-  "user-agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36 Edg/89.0.774.63",
+  "user-agent": userAgent,
   accept: "*/*",
-  "accept-encoding": "gzip, deflate, br",
   "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
 };
 let cookie;
 
-/** 获取cid */
+function getApiData(response, action: string) {
+  if (response?.code !== 0 || response?.data == null) {
+    throw new Error(`${action}失败：${response?.message ?? response?.code ?? "未知错误"}`);
+  }
+  return response.data;
+}
+
+function getCookieHeader() {
+  return cookie ? `buvid3=${cookie.b_3}; buvid4=${cookie.b_4}` : undefined;
+}
+
+/** 获取分P和cid */
 async function getCid(bvid, aid) {
   const params = bvid
     ? {
@@ -22,13 +33,27 @@ async function getCid(bvid, aid) {
     : {
       aid: aid,
     };
-  const cidRes = (
-    await axios.get("https://api.bilibili.com/x/web-interface/view?%s", {
-      headers: headers,
-      params: params,
+  await getCookie();
+  const response = (
+    await axios.get("https://api.bilibili.com/x/player/pagelist", {
+      headers: {
+        ...headers,
+        cookie: getCookieHeader(),
+        referer: `https://www.bilibili.com/video/${bvid ?? `av${aid}`}`,
+      },
+      params: {...params, jsonp: "jsonp"},
     })
   ).data;
-  return cidRes;
+  const pages = getApiData(response, "获取视频分P");
+  if (!pages.length) {
+    throw new Error("获取视频分P失败：没有可播放的内容");
+  }
+  return {
+    data: {
+      cid: pages[0].cid,
+      pages,
+    },
+  };
 }
 
 /** 格式化 */
@@ -48,10 +73,8 @@ function durationToSec(duration: string | number) {
 }
 
 const searchHeaders = {
-  "user-agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36 Edg/89.0.774.63",
+  "user-agent": userAgent,
   accept: "application/json, text/plain, */*",
-  "accept-encoding": "gzip, deflate, br",
   origin: "https://search.bilibili.com",
   "sec-fetch-site": "same-site",
   "sec-fetch-mode": "cors",
@@ -64,11 +87,13 @@ async function getCookie() {
     cookie = (
       await axios.get("https://api.bilibili.com/x/frontend/finger/spi", {
         headers: {
-          "User-Agent":
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1 Edg/114.0.0.0",
+          "User-Agent": userAgent,
         },
       })
     ).data.data;
+    if (!cookie?.b_3 || !cookie?.b_4) {
+      throw new Error("获取 B 站匿名会话失败");
+    }
   }
 }
 const pageSize = 20;
@@ -102,7 +127,7 @@ async function searchBase(keyword: string, page: number, searchType) {
       params: params,
     })
   ).data;
-  return res.data;
+  return getApiData(res, "搜索");
 }
 
 /** 获取收藏夹 */
@@ -164,7 +189,9 @@ function formatMedia(result: any) {
 
 async function searchAlbum(keyword, page) {
   const resultData = await searchBase(keyword, page, "video");
-  const albums = resultData.result.map(formatMedia);
+  const albums = resultData.result
+    .filter((item) => item.type === "video" && item.bvid)
+    .map(formatMedia);
   return {
     isEnd: resultData.numResults <= page * pageSize,
     data: albums,
@@ -377,48 +404,59 @@ async function getMediaSource(
       aid: musicItem.aid,
     };
 
-  const res = (
+  await getCookie();
+  const referer = `https://www.bilibili.com/video/${musicItem.bvid ?? `av${musicItem.aid}`}`;
+  const response = (
     await axios.get("https://api.bilibili.com/x/player/playurl", {
-      headers: headers,
-      params: { ..._params, cid: cid, fnval: 16 },
+      headers: {
+        ...headers,
+        cookie: getCookieHeader(),
+        referer,
+      },
+      params: {
+        ..._params,
+        cid,
+        qn: 127,
+        fnver: 0,
+        fnval: 4048,
+        fourk: 1,
+        platform: "pc",
+      },
     })
   ).data;
+  const data = getApiData(response, "获取音源");
   let url;
 
-  if (res.data.dash) {
-    const audios = res.data.dash.audio;
+  if (data.dash) {
+    const extraAudios = [];
+    [data.dash.dolby?.audio, data.dash.flac?.audio].forEach((audio) => {
+      if (Array.isArray(audio)) {
+        extraAudios.push(...audio);
+      } else if (audio) {
+        extraAudios.push(audio);
+      }
+    });
+    const audios = [...(data.dash.audio ?? []), ...extraAudios]
+      .filter((audio, index, list) => {
+        const audioUrl = audio.baseUrl ?? audio.base_url;
+        return audioUrl && list.findIndex((item) => (item.baseUrl ?? item.base_url) === audioUrl) === index;
+      });
     audios.sort((a, b) => a.bandwidth - b.bandwidth);
-    switch (quality) {
-      case "low":
-        url = audios[0].baseUrl;
-        break;
-      case "standard":
-        url = audios[1].baseUrl;
-        break;
-      case "high":
-        url = audios[2].baseUrl;
-        break;
-      case "super":
-        url = audios[3].baseUrl;
-        break;
-    }
-  } else {
-    url = res.data.durl[0].url;
+    const qualityIndex = {low: 0, standard: 1, high: 2, super: 3}[quality] ?? 1;
+    const audio = audios[Math.min(qualityIndex, audios.length - 1)];
+    url = audio?.baseUrl ?? audio?.base_url;
+  } else if (data.durl?.length) {
+    url = data.durl[0].url;
   }
 
-  const hostUrl = url.substring(url.indexOf("/") + 2);
+  if (!url) {
+    throw new Error("获取音源失败：该视频没有当前账号可用的音频流");
+  }
+
   const _headers = {
-    "user-agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Safari/537.36 Edg/89.0.774.63",
+    "user-agent": userAgent,
     accept: "*/*",
-    host: hostUrl.substring(0, hostUrl.indexOf("/")),
-    "accept-encoding": "gzip, deflate, br",
-    connection: "keep-alive",
-    referer: "https://www.bilibili.com/video/".concat(
-      (musicItem.bvid !== null && musicItem.bvid !== undefined
-        ? musicItem.bvid
-        : musicItem.aid) ?? ""
-    ),
+    referer,
   };
   return {
     url: url,
@@ -655,11 +693,11 @@ async function getMusicComments(musicItem) {
 module.exports = {
   platform: "bilibili",
   appVersion: ">=0.0",
-  version: "0.2.3",
-  author: "猫头猫",
+  version: "0.3.0",
+  author: "Chx999 / 猫头猫",
   cacheControl: "no-cache",
   srcUrl:
-    "https://gitee.com/maotoumao/MusicFreePlugins/raw/v0.1/dist/bilibili/index.js",
+    "https://raw.githubusercontent.com/Chx999/MusicFreePlugins/master/dist/bilibili/index.js",
   primaryKey: ["id", "aid", "bvid", "cid"],
   hints: {
     importMusicSheet: [
@@ -683,7 +721,7 @@ module.exports = {
   async getAlbumInfo(albumItem) {
     const cidRes = await getCid(albumItem.bvid, albumItem.aid);
 
-    const _ref2 = cidRes?.data ?? {};
+    const _ref2 = cidRes.data;
     const cid = _ref2.cid;
     const pages = _ref2.pages;
 
