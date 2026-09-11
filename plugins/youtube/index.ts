@@ -182,6 +182,27 @@ async function getMediaSource(musicItem, quality) {
     );
   }
 
+  // MusicFree treats direct URLs as progressive sources. Prefer YouTube's
+  // muxed MP4 because some Android players reject standalone DASH fragments.
+  const progressiveFormats = (result.streamingData.formats ?? [])
+    .filter(
+      (item) =>
+        item.url &&
+        item.audioQuality &&
+        item.mimeType?.startsWith("video/mp4")
+    )
+    .sort((a, b) => (a.bitrate ?? 0) - (b.bitrate ?? 0));
+  const progressiveFormat = progressiveFormats[0];
+  if (progressiveFormat?.url) {
+    return {
+      url: progressiveFormat.url,
+      headers: {
+        "user-agent": playerClient.userAgent,
+        accept: "*/*",
+      },
+    };
+  }
+
   const audioFormats = (result.streamingData.adaptiveFormats ?? [])
     .filter((item) => item.url && item.mimeType?.startsWith("audio/"));
   const aacLcFormats = audioFormats.filter(
@@ -217,7 +238,7 @@ async function getMediaSource(musicItem, quality) {
 module.exports = {
   platform: "Youtube",
   author: "Chx999 / 猫头猫",
-  version: "0.1.1",
+  version: "0.1.2",
   supportedSearchType: ["music"],
   srcUrl:
     "https://raw.githubusercontent.com/Chx999/MusicFreePlugins/master/dist/youtube/index.js",

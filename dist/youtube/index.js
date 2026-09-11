@@ -127,7 +127,7 @@ async function search(query, page, type) {
     }
 }
 async function getMediaSource(musicItem, quality) {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     const data = {
         context: {
             client: {
@@ -162,7 +162,27 @@ async function getMediaSource(musicItem, quality) {
     if (((_a = result.playabilityStatus) === null || _a === void 0 ? void 0 : _a.status) !== "OK" || !result.streamingData) {
         throw new Error(`获取 YouTube 音源失败：${(_e = (_c = (_b = result.playabilityStatus) === null || _b === void 0 ? void 0 : _b.reason) !== null && _c !== void 0 ? _c : (_d = result.playabilityStatus) === null || _d === void 0 ? void 0 : _d.status) !== null && _e !== void 0 ? _e : "视频不可播放"}`);
     }
-    const audioFormats = ((_f = result.streamingData.adaptiveFormats) !== null && _f !== void 0 ? _f : [])
+    // MusicFree treats direct URLs as progressive sources. Prefer YouTube's
+    // muxed MP4 because some Android players reject standalone DASH fragments.
+    const progressiveFormats = ((_f = result.streamingData.formats) !== null && _f !== void 0 ? _f : [])
+        .filter((item) => {
+        var _a;
+        return item.url &&
+            item.audioQuality &&
+            ((_a = item.mimeType) === null || _a === void 0 ? void 0 : _a.startsWith("video/mp4"));
+    })
+        .sort((a, b) => { var _a, _b; return ((_a = a.bitrate) !== null && _a !== void 0 ? _a : 0) - ((_b = b.bitrate) !== null && _b !== void 0 ? _b : 0); });
+    const progressiveFormat = progressiveFormats[0];
+    if (progressiveFormat === null || progressiveFormat === void 0 ? void 0 : progressiveFormat.url) {
+        return {
+            url: progressiveFormat.url,
+            headers: {
+                "user-agent": playerClient.userAgent,
+                accept: "*/*",
+            },
+        };
+    }
+    const audioFormats = ((_g = result.streamingData.adaptiveFormats) !== null && _g !== void 0 ? _g : [])
         .filter((item) => { var _a; return item.url && ((_a = item.mimeType) === null || _a === void 0 ? void 0 : _a.startsWith("audio/")); });
     const aacLcFormats = audioFormats.filter((item) => item.mimeType.startsWith("audio/mp4") &&
         item.mimeType.includes("mp4a.40.2"));
@@ -173,7 +193,7 @@ async function getMediaSource(musicItem, quality) {
             ? mp4Formats
             : audioFormats;
     preferredFormats.sort((a, b) => { var _a, _b; return ((_a = a.bitrate) !== null && _a !== void 0 ? _a : 0) - ((_b = b.bitrate) !== null && _b !== void 0 ? _b : 0); });
-    const qualityIndex = (_g = { low: 0, standard: 1, high: 2, super: 3 }[quality]) !== null && _g !== void 0 ? _g : 1;
+    const qualityIndex = (_h = { low: 0, standard: 1, high: 2, super: 3 }[quality]) !== null && _h !== void 0 ? _h : 1;
     const format = preferredFormats[Math.min(qualityIndex, preferredFormats.length - 1)];
     if (!(format === null || format === void 0 ? void 0 : format.url)) {
         throw new Error("获取 YouTube 音源失败：没有可直接播放的公开音频流");
@@ -189,7 +209,7 @@ async function getMediaSource(musicItem, quality) {
 module.exports = {
     platform: "Youtube",
     author: "Chx999 / 猫头猫",
-    version: "0.1.1",
+    version: "0.1.2",
     supportedSearchType: ["music"],
     srcUrl: "https://raw.githubusercontent.com/Chx999/MusicFreePlugins/master/dist/youtube/index.js",
     cacheControl: "no-store",
