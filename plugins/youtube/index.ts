@@ -12,15 +12,30 @@ function formatMusicItem(item) {
   };
 }
 
-let lastQuery;
-let musicContinToken;
+const searchContinuations = {};
+
+const webClient = {
+  clientName: "WEB",
+  clientVersion: "2.20231121.08.00",
+  userAgent:
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+};
+
+const playerClient = {
+  clientName: "ANDROID",
+  clientVersion: "20.35.36",
+  userAgent:
+    "com.google.android.youtube/20.35.36 (Linux; U; Android 14; en_US) gzip",
+};
 
 async function searchMusic(query, page) {
-  // 新的搜索
-  if (query !== lastQuery || page === 1) {
-    musicContinToken = undefined;
+  if (page === 1) {
+    searchContinuations[query] = {};
   }
-  lastQuery = query;
+  const continuation = searchContinuations[query]?.[page];
+  if (page > 1 && !continuation) {
+    return {isEnd: true, data: []};
+  }
 
   let data = JSON.stringify({
     context: {
@@ -29,10 +44,9 @@ async function searchMusic(query, page) {
         gl: "US",
         deviceMake: "",
         deviceModel: "",
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0,gzip(gfe)",
-        clientName: "WEB",
-        clientVersion: "2.20231121.08.00",
+        userAgent: webClient.userAgent,
+        clientName: webClient.clientName,
+        clientVersion: webClient.clientVersion,
         osName: "Windows",
         osVersion: "10.0",
         platform: "DESKTOP",
@@ -62,8 +76,8 @@ async function searchMusic(query, page) {
         internalExperimentFlags: [],
       },
     },
-    query: musicContinToken ? undefined : query,
-    continuation: musicContinToken || undefined,
+    query: continuation ? undefined : query,
+    continuation,
   });
 
   var config = {
@@ -71,15 +85,23 @@ async function searchMusic(query, page) {
     url: "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
     headers: {
       "Content-Type": "text/plain",
+      "User-Agent": webClient.userAgent,
     },
     data: data,
   };
 
   const response = (await axios(config)).data;
 
-  const contents =
-    response.contents.twoColumnSearchResultsRenderer.primaryContents
-      .sectionListRenderer.contents;
+  const contents = response.contents?.twoColumnSearchResultsRenderer
+    ?.primaryContents?.sectionListRenderer?.contents ??
+    (response.onResponseReceivedCommands ?? []).reduce((items, command) => {
+      const continuationItems =
+        command.appendContinuationItemsAction?.continuationItems;
+      if (continuationItems) {
+        items.push(...continuationItems);
+      }
+      return items;
+    }, []);
 
   const isEndItem = contents.find(
     (it) =>
@@ -87,13 +109,19 @@ async function searchMusic(query, page) {
         ?.request === "CONTINUATION_REQUEST_TYPE_SEARCH"
   );
   if (isEndItem) {
-    musicContinToken =
+    searchContinuations[query][page + 1] =
       isEndItem.continuationItemRenderer.continuationEndpoint
         .continuationCommand.token;
   }
 
-  const musicData = contents.find((it) => it.itemSectionRenderer)
-    .itemSectionRenderer.contents;
+  const musicData = contents.reduce((items, item) => {
+    if (item.itemSectionRenderer?.contents) {
+      items.push(...item.itemSectionRenderer.contents);
+    } else if (item.videoRenderer) {
+      items.push(item);
+    }
+    return items;
+  }, []);
 
   let resultMusicData = [];
   for (let i = 0; i < musicData.length; ++i) {
@@ -114,74 +142,26 @@ async function search(query, page, type) {
   }
 }
 
-let cacheMediaSource = {
-  id: null,
-  urls: {},
-};
-
-function getQuality(label) {
-  if (label === "small") {
-    return "standard";
-  } else if (label === "tiny") {
-    return "low";
-  } else if (label === "medium") {
-    return "high";
-  } else if (label === "large") {
-    return "super";
-  } else {
-    return "standard";
-  }
-}
-
 async function getMediaSource(musicItem, quality) {
-  if (musicItem.id === cacheMediaSource.id) {
-    return {
-      url: cacheMediaSource.urls[quality],
-    };
-  }
-
-  cacheMediaSource = {
-    id: null,
-    urls: {},
-  };
-
   const data = {
     context: {
       client: {
-        screenWidthPoints: 689,
-        screenHeightPoints: 963,
-        screenPixelDensity: 1,
-        utcOffsetMinutes: 120,
+        utcOffsetMinutes: 0,
         hl: "en",
-        gl: "GB",
-        remoteHost: "1.1.1.1",
-        deviceMake: "",
-        deviceModel: "",
-        userAgent:
-          "com.google.android.apps.youtube.music/6.14.50 (Linux; U; Android 13; GB) gzip",
-        clientName: "ANDROID_MUSIC",
-        clientVersion: "6.14.50",
+        gl: "US",
+        userAgent: playerClient.userAgent,
+        clientName: playerClient.clientName,
+        clientVersion: playerClient.clientVersion,
         osName: "Android",
-        osVersion: "13",
-        originalUrl:
-          "https://www.youtube.com/tv?is_account_switch=1&hrld=1&fltor=1",
-        theme: "CLASSIC",
+        osVersion: "14",
         platform: "MOBILE",
-        clientFormFactor: "UNKNOWN_FORM_FACTOR",
-        webpSupport: false,
-        timeZone: "Europe/Amsterdam",
-        acceptHeader:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        timeZone: "UTC",
       },
-      user: { enableSafetyMode: false },
       request: {
-        internalExperimentFlags: [],
-        consistencyTokenJars: [],
+        useSsl: true,
       },
     },
-    contentCheckOk: true,
-    racyCheckOk: true,
-    video_id: musicItem.id,
+    videoId: musicItem.id,
   };
 
   var config = {
@@ -189,35 +169,49 @@ async function getMediaSource(musicItem, quality) {
     url: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
     headers: {
       "Content-Type": "application/json",
+      "User-Agent": playerClient.userAgent,
     },
     data: JSON.stringify(data),
   };
 
   const result = (await axios(config)).data;
-  const formats = result.streamingData.formats ?? [];
-  const adaptiveFormats = result.streamingData.adaptiveFormats ?? [];
+  if (result.playabilityStatus?.status !== "OK" || !result.streamingData) {
+    throw new Error(
+      `获取 YouTube 音源失败：${result.playabilityStatus?.reason ?? result.playabilityStatus?.status ?? "视频不可播放"}`
+    );
+  }
 
-  [...formats, ...adaptiveFormats].forEach((it) => {
-    const q = getQuality(it.quality);
-    if (q && it.url && !cacheMediaSource.urls[q]) {
-      cacheMediaSource.urls[q] = it.url;
-    }
-  });
+  const audioFormats = (result.streamingData.adaptiveFormats ?? [])
+    .filter((item) => item.url && item.mimeType?.startsWith("audio/"));
+  const preferredFormats = audioFormats.some((item) =>
+    item.mimeType.startsWith("audio/mp4")
+  )
+    ? audioFormats.filter((item) => item.mimeType.startsWith("audio/mp4"))
+    : audioFormats;
+  preferredFormats.sort((a, b) => (a.bitrate ?? 0) - (b.bitrate ?? 0));
+
+  const qualityIndex = {low: 0, standard: 1, high: 2, super: 3}[quality] ?? 1;
+  const format = preferredFormats[Math.min(qualityIndex, preferredFormats.length - 1)];
+  if (!format?.url) {
+    throw new Error("获取 YouTube 音源失败：没有可直接播放的公开音频流");
+  }
 
   return {
-    url: cacheMediaSource.urls[quality],
+    url: format.url,
+    headers: {
+      "User-Agent": playerClient.userAgent,
+    },
   };
 }
 
 module.exports = {
   platform: "Youtube",
-  author: '猫头猫',
-  version: "0.0.1",
+  author: "Chx999 / 猫头猫",
+  version: "0.1.0",
   supportedSearchType: ["music"],
   srcUrl:
-    "https://gitee.com/maotoumao/MusicFreePlugins/raw/v0.1/dist/youtube/index.js",
+    "https://raw.githubusercontent.com/Chx999/MusicFreePlugins/master/dist/youtube/index.js",
   cacheControl: "no-cache",
   search,
   getMediaSource,
 };
-

@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const axios_1 = require("axios");
+// import { HttpsProxyAgent } from "https-proxy-agent";
+// axios.defaults.httpsAgent = new HttpsProxyAgent("http://127.0.0.1:10809");
 function formatMusicItem(item) {
     var _a, _b, _c, _d, _e, _f, _g;
     return {
@@ -10,13 +12,26 @@ function formatMusicItem(item) {
         artwork: (_g = (_f = (_e = item === null || item === void 0 ? void 0 : item.thumbnail) === null || _e === void 0 ? void 0 : _e.thumbnails) === null || _f === void 0 ? void 0 : _f[0]) === null || _g === void 0 ? void 0 : _g.url,
     };
 }
-let lastQuery;
-let musicContinToken;
+const searchContinuations = {};
+const webClient = {
+    clientName: "WEB",
+    clientVersion: "2.20231121.08.00",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+};
+const playerClient = {
+    clientName: "ANDROID",
+    clientVersion: "20.35.36",
+    userAgent: "com.google.android.youtube/20.35.36 (Linux; U; Android 14; en_US) gzip",
+};
 async function searchMusic(query, page) {
-    if (query !== lastQuery || page === 1) {
-        musicContinToken = undefined;
+    var _a, _b, _c, _d, _e, _f, _g;
+    if (page === 1) {
+        searchContinuations[query] = {};
     }
-    lastQuery = query;
+    const continuation = (_a = searchContinuations[query]) === null || _a === void 0 ? void 0 : _a[page];
+    if (page > 1 && !continuation) {
+        return { isEnd: true, data: [] };
+    }
     let data = JSON.stringify({
         context: {
             client: {
@@ -24,9 +39,9 @@ async function searchMusic(query, page) {
                 gl: "US",
                 deviceMake: "",
                 deviceModel: "",
-                userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0,gzip(gfe)",
-                clientName: "WEB",
-                clientVersion: "2.20231121.08.00",
+                userAgent: webClient.userAgent,
+                clientName: webClient.clientName,
+                clientVersion: webClient.clientVersion,
                 osName: "Windows",
                 osVersion: "10.0",
                 platform: "DESKTOP",
@@ -55,31 +70,46 @@ async function searchMusic(query, page) {
                 internalExperimentFlags: [],
             },
         },
-        query: musicContinToken ? undefined : query,
-        continuation: musicContinToken || undefined,
+        query: continuation ? undefined : query,
+        continuation,
     });
     var config = {
         method: "post",
         url: "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
         headers: {
             "Content-Type": "text/plain",
+            "User-Agent": webClient.userAgent,
         },
         data: data,
     };
     const response = (await (0, axios_1.default)(config)).data;
-    const contents = response.contents.twoColumnSearchResultsRenderer.primaryContents
-        .sectionListRenderer.contents;
+    const contents = (_f = (_e = (_d = (_c = (_b = response.contents) === null || _b === void 0 ? void 0 : _b.twoColumnSearchResultsRenderer) === null || _c === void 0 ? void 0 : _c.primaryContents) === null || _d === void 0 ? void 0 : _d.sectionListRenderer) === null || _e === void 0 ? void 0 : _e.contents) !== null && _f !== void 0 ? _f : ((_g = response.onResponseReceivedCommands) !== null && _g !== void 0 ? _g : []).reduce((items, command) => {
+        var _a;
+        const continuationItems = (_a = command.appendContinuationItemsAction) === null || _a === void 0 ? void 0 : _a.continuationItems;
+        if (continuationItems) {
+            items.push(...continuationItems);
+        }
+        return items;
+    }, []);
     const isEndItem = contents.find((it) => {
         var _a, _b, _c;
         return ((_c = (_b = (_a = it.continuationItemRenderer) === null || _a === void 0 ? void 0 : _a.continuationEndpoint) === null || _b === void 0 ? void 0 : _b.continuationCommand) === null || _c === void 0 ? void 0 : _c.request) === "CONTINUATION_REQUEST_TYPE_SEARCH";
     });
     if (isEndItem) {
-        musicContinToken =
+        searchContinuations[query][page + 1] =
             isEndItem.continuationItemRenderer.continuationEndpoint
                 .continuationCommand.token;
     }
-    const musicData = contents.find((it) => it.itemSectionRenderer)
-        .itemSectionRenderer.contents;
+    const musicData = contents.reduce((items, item) => {
+        var _a;
+        if ((_a = item.itemSectionRenderer) === null || _a === void 0 ? void 0 : _a.contents) {
+            items.push(...item.itemSectionRenderer.contents);
+        }
+        else if (item.videoRenderer) {
+            items.push(item);
+        }
+        return items;
+    }, []);
     let resultMusicData = [];
     for (let i = 0; i < musicData.length; ++i) {
         if (musicData[i].videoRenderer) {
@@ -96,100 +126,65 @@ async function search(query, page, type) {
         return await searchMusic(query, page);
     }
 }
-let cacheMediaSource = {
-    id: null,
-    urls: {},
-};
-function getQuality(label) {
-    if (label === "small") {
-        return "standard";
-    }
-    else if (label === "tiny") {
-        return "low";
-    }
-    else if (label === "medium") {
-        return "high";
-    }
-    else if (label === "large") {
-        return "super";
-    }
-    else {
-        return "standard";
-    }
-}
 async function getMediaSource(musicItem, quality) {
-    var _a, _b;
-    if (musicItem.id === cacheMediaSource.id) {
-        return {
-            url: cacheMediaSource.urls[quality],
-        };
-    }
-    cacheMediaSource = {
-        id: null,
-        urls: {},
-    };
+    var _a, _b, _c, _d, _e, _f, _g;
     const data = {
         context: {
             client: {
-                screenWidthPoints: 689,
-                screenHeightPoints: 963,
-                screenPixelDensity: 1,
-                utcOffsetMinutes: 120,
+                utcOffsetMinutes: 0,
                 hl: "en",
-                gl: "GB",
-                remoteHost: "1.1.1.1",
-                deviceMake: "",
-                deviceModel: "",
-                userAgent: "com.google.android.apps.youtube.music/6.14.50 (Linux; U; Android 13; GB) gzip",
-                clientName: "ANDROID_MUSIC",
-                clientVersion: "6.14.50",
+                gl: "US",
+                userAgent: playerClient.userAgent,
+                clientName: playerClient.clientName,
+                clientVersion: playerClient.clientVersion,
                 osName: "Android",
-                osVersion: "13",
-                originalUrl: "https://www.youtube.com/tv?is_account_switch=1&hrld=1&fltor=1",
-                theme: "CLASSIC",
+                osVersion: "14",
                 platform: "MOBILE",
-                clientFormFactor: "UNKNOWN_FORM_FACTOR",
-                webpSupport: false,
-                timeZone: "Europe/Amsterdam",
-                acceptHeader: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                timeZone: "UTC",
             },
-            user: { enableSafetyMode: false },
             request: {
-                internalExperimentFlags: [],
-                consistencyTokenJars: [],
+                useSsl: true,
             },
         },
-        contentCheckOk: true,
-        racyCheckOk: true,
-        video_id: musicItem.id,
+        videoId: musicItem.id,
     };
     var config = {
         method: "post",
         url: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
         headers: {
             "Content-Type": "application/json",
+            "User-Agent": playerClient.userAgent,
         },
         data: JSON.stringify(data),
     };
     const result = (await (0, axios_1.default)(config)).data;
-    const formats = (_a = result.streamingData.formats) !== null && _a !== void 0 ? _a : [];
-    const adaptiveFormats = (_b = result.streamingData.adaptiveFormats) !== null && _b !== void 0 ? _b : [];
-    [...formats, ...adaptiveFormats].forEach((it) => {
-        const q = getQuality(it.quality);
-        if (q && it.url && !cacheMediaSource.urls[q]) {
-            cacheMediaSource.urls[q] = it.url;
-        }
-    });
+    if (((_a = result.playabilityStatus) === null || _a === void 0 ? void 0 : _a.status) !== "OK" || !result.streamingData) {
+        throw new Error(`获取 YouTube 音源失败：${(_e = (_c = (_b = result.playabilityStatus) === null || _b === void 0 ? void 0 : _b.reason) !== null && _c !== void 0 ? _c : (_d = result.playabilityStatus) === null || _d === void 0 ? void 0 : _d.status) !== null && _e !== void 0 ? _e : "视频不可播放"}`);
+    }
+    const audioFormats = ((_f = result.streamingData.adaptiveFormats) !== null && _f !== void 0 ? _f : [])
+        .filter((item) => { var _a; return item.url && ((_a = item.mimeType) === null || _a === void 0 ? void 0 : _a.startsWith("audio/")); });
+    const preferredFormats = audioFormats.some((item) => item.mimeType.startsWith("audio/mp4"))
+        ? audioFormats.filter((item) => item.mimeType.startsWith("audio/mp4"))
+        : audioFormats;
+    preferredFormats.sort((a, b) => { var _a, _b; return ((_a = a.bitrate) !== null && _a !== void 0 ? _a : 0) - ((_b = b.bitrate) !== null && _b !== void 0 ? _b : 0); });
+    const qualityIndex = (_g = { low: 0, standard: 1, high: 2, super: 3 }[quality]) !== null && _g !== void 0 ? _g : 1;
+    const format = preferredFormats[Math.min(qualityIndex, preferredFormats.length - 1)];
+    if (!(format === null || format === void 0 ? void 0 : format.url)) {
+        throw new Error("获取 YouTube 音源失败：没有可直接播放的公开音频流");
+    }
     return {
-        url: cacheMediaSource.urls[quality],
+        url: format.url,
+        headers: {
+            "User-Agent": playerClient.userAgent,
+        },
     };
 }
 module.exports = {
     platform: "Youtube",
-    author: '猫头猫',
-    version: "0.0.1",
+    author: "Chx999 / 猫头猫",
+    version: "0.1.0",
     supportedSearchType: ["music"],
-    srcUrl: "https://gitee.com/maotoumao/MusicFreePlugins/raw/v0.1/dist/youtube/index.js",
+    srcUrl: "https://raw.githubusercontent.com/Chx999/MusicFreePlugins/master/dist/youtube/index.js",
     cacheControl: "no-cache",
     search,
     getMediaSource,
